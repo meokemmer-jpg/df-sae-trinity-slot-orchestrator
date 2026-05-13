@@ -1,0 +1,81 @@
+df_id: df-sae-trinity-slot-orchestrator
+df_name: SAE-v8-Trinity-Slot-Orchestrator
+welle_introduced: welle-48-50
+type: foundation-df
+crux-mk: true
+k0_touch: false
+q0_touch: false
+phronesis_required: false
+
+sae_v8_compliance:
+  trinity_pattern: true
+  q_scale: 11.11
+  f_cum_decay: 0.98
+  t_cap: 50000
+  t_min: 2000
+  t_recovery_floor: 20000
+  w_cap: 3.0
+  h_max: 3.32
+  relegation_threshold: 0.3
+  incumbent_advantage: 1.15
+  slots_total: 200
+  variants_per_slot: 3
+  agents_total: 600
+
+# K11-K16 Akzeptanz-Kriterien
+acceptance_criteria:
+  K11_cascade_containment:
+    cascade_isolation: hard
+    failure_blast_radius: 1
+    dependency_dlq_strategy: tenant_scoped
+  K12_distillation_resistenz:
+    output_feeds_into_training: false
+    provenance_required_in_output: true
+    non_llm_validation_layer: true
+  K13_independent_ground_truth:
+    external_anchor_type: drive_filesystem
+    pre_action_domain_check: true
+    pre_action_backup_check: true
+  K14_human_override_decay:
+    override_complexity: single_command
+    override_documentation_freshness_days: 30
+    martin_review_cadence: monthly
+  K15_entropy_budget:
+    entropy_added_loc_estimate: 1200
+    entropy_justified_by_rho: structural_invariant
+  K16_concurrent_spawn_mutex:
+    concurrent_spawn_protection: both
+    lock_dir: /tmp/df-sae-trinity.lock
+    lock_stale_age_h: 6
+    engine_pgrep_check: true
+
+# LC1-LC5 Lose-Coupling
+lose_coupling:
+  LC1_graceful_degradation:
+    degradation_modes:
+      - full
+      - degraded_audit
+      - standalone
+    degradation_test_required: true
+  LC2_direct_mode:
+    direct_mode_available: true
+    direct_mode_capability: 0.80
+    direct_mode_trigger: "audit-logger unreachable >30s"
+  LC3_circuit_breaker:
+    circuit_breaker_timeout_s: 30
+    circuit_breaker_open_threshold: 3
+    circuit_breaker_half_open_test_interval_s: 300
+  LC4_failure_isolation:
+    state_externalization: true
+    idempotent_operations: true
+    dependency_dlq_separate: true
+  LC5_health_check:
+    health_check_dependencies: []
+    health_check_degraded_score: 0.7
+    health_check_endpoint_or_file: branch-hub/state/df-sae-trinity-health.json
+
+# Real-Aktivierung-Gate
+real_mode:
+  env_var: DF_SAE_TRINITY_REAL_ENABLED
+  default: false
+  phronesis_ticket_required: true
