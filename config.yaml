@@ -32,10 +32,19 @@ acceptance_criteria:
     output_feeds_into_training: false
     provenance_required_in_output: true
     non_llm_validation_layer: true
+    # W50-A Batch-2 K12 upgrade: FullProvenanceEnvelope (HMAC + chain_predecessor)
+    envelope_schema: full_provenance_envelope_v1
+    hmac_secret_env_var: DF_SAE_TRINITY_HMAC_SECRET
+    envelope_ttl_seconds: 86400
+    chain_linkage: true
   K13_independent_ground_truth:
-    external_anchor_type: drive_filesystem
+    # W50-A Batch-2 K13 upgrade: drive_filesystem → rfc3161 (real RFC3161 timestamping)
+    external_anchor_type: rfc3161
+    external_anchor_provider: freetsa
     pre_action_domain_check: true
     pre_action_backup_check: true
+    anchor_cadence: per_state_snapshot
+    anchor_log: audit/anchors/rfc3161-anchors.jsonl
   K14_human_override_decay:
     override_complexity: single_command
     override_documentation_freshness_days: 30
@@ -46,6 +55,7 @@ acceptance_criteria:
   K16_concurrent_spawn_mutex:
     concurrent_spawn_protection: both
     lock_dir: /tmp/df-sae-trinity.lock
+    lock_implementation: atomic_lock_w48  # W50-A Batch-2: AtomicLock (file-based)
     lock_stale_age_h: 6
     engine_pgrep_check: true
 
