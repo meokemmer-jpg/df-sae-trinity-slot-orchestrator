@@ -6,6 +6,7 @@ crux-mk: true
 k0_touch: false
 q0_touch: false
 phronesis_required: false
+
 sae_v8_compliance:
   trinity_pattern: true
   q_scale: 11.11
@@ -20,6 +21,8 @@ sae_v8_compliance:
   slots_total: 200
   variants_per_slot: 3
   agents_total: 600
+
+# K11-K16 Akzeptanz-Kriterien
 acceptance_criteria:
   K11_cascade_containment:
     cascade_isolation: hard
@@ -29,11 +32,13 @@ acceptance_criteria:
     output_feeds_into_training: false
     provenance_required_in_output: true
     non_llm_validation_layer: true
+    # W50-A Batch-2 K12 upgrade: FullProvenanceEnvelope (HMAC + chain_predecessor)
     envelope_schema: full_provenance_envelope_v1
     hmac_secret_env_var: DF_SAE_TRINITY_HMAC_SECRET
     envelope_ttl_seconds: 86400
     chain_linkage: true
   K13_independent_ground_truth:
+    # W50-A Batch-2 K13 upgrade: drive_filesystem → rfc3161 (real RFC3161 timestamping)
     external_anchor_type: rfc3161
     external_anchor_provider: freetsa
     pre_action_domain_check: true
@@ -50,20 +55,22 @@ acceptance_criteria:
   K16_concurrent_spawn_mutex:
     concurrent_spawn_protection: both
     lock_dir: /tmp/df-sae-trinity.lock
-    lock_implementation: atomic_lock_w48
+    lock_implementation: atomic_lock_w48  # W50-A Batch-2: AtomicLock (file-based)
     lock_stale_age_h: 6
     engine_pgrep_check: true
+
+# LC1-LC5 Lose-Coupling
 lose_coupling:
   LC1_graceful_degradation:
     degradation_modes:
-    - full
-    - degraded_audit
-    - standalone
+      - full
+      - degraded_audit
+      - standalone
     degradation_test_required: true
   LC2_direct_mode:
     direct_mode_available: true
-    direct_mode_capability: 0.8
-    direct_mode_trigger: audit-logger unreachable >30s
+    direct_mode_capability: 0.80
+    direct_mode_trigger: "audit-logger unreachable >30s"
   LC3_circuit_breaker:
     circuit_breaker_timeout_s: 30
     circuit_breaker_open_threshold: 3
@@ -76,26 +83,9 @@ lose_coupling:
     health_check_dependencies: []
     health_check_degraded_score: 0.7
     health_check_endpoint_or_file: branch-hub/state/df-sae-trinity-health.json
+
+# Real-Aktivierung-Gate
 real_mode:
   env_var: DF_SAE_TRINITY_REAL_ENABLED
   default: false
   phronesis_ticket_required: true
-activation_gates:
-  DEFAULT_MODE: sandbox
-  env_var_real_mode: DF_SAE_TRINITY_SLOT_ORCHESTRATOR_REAL_ENABLED
-  requires_phronesis_ticket: true
-  pre_run_check_pflicht: true
-phronesis_required_for:
-- real_mode
-- prod
-- cross_tenant
-- k0_q0
-commit_conditions:
-- K12
-- K13
-- K16
-env_vars:
-  DEFAULT_MODE: sandbox
-  internal_real_mode: 'false'
-  external_real_mode: 'false'
-  external_output_gate: blocked
