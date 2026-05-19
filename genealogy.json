@@ -1,0 +1,10 @@
+{
+  "df_name": "df-sae-trinity-slot-orchestrator",
+  "parent": "backfill-root",
+  "generation": 0,
+  "born_at": "2026-05-18T11:10:45.066957+00:00",
+  "mutation_path": [],
+  "status": "alive",
+  "deaths": [],
+  "revivals": []
+}
