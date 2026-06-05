@@ -8,3 +8,12 @@ learnings/
 STOP.flag
 *.log
 .DS_Store
+*.env
+.env
+*.db
+*.sqlite
+*.sqlite3
+*.key
+*.pem
+secrets.json
+credentials.json

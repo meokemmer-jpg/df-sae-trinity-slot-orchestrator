@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 # K12+K13+K16 Trinity-CONTRARIAN 2026-05-17 (Cross-LLM-validated)
 def k12_provenance(payload: bytes, key: bytes = b"df-trinity-contrarian-v1") -> dict:
@@ -27,6 +26,7 @@ def k16_lock_or_exit(df_name: str):
         sys.exit(3)
 
 """Voting-Engine: Best-of-3-Wins per Trinity-Pattern [CRUX-MK]."""
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List
