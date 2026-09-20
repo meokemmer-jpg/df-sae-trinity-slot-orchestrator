@@ -1,5 +1,6 @@
 {
-  "verdict": "HOLLOW",
-  "reason": "Der Test prueft phronesis_gate/P1+P3 statt provenance_integration und belegt weder Trinity-200-Slot-Snapshots mit K12/K13/K16 noch einen adversarialen Gegenfall mit anderem Output.",
-  "ts": "2026-07-09T03:11:04.005247+00:00"
+  "verdict": "HOLDS",
+  "reason": "Der Test nutzt echte on-disk Envelopes/Anchor-Log mit echter HMAC-Verifikation und zeigt durch benignen vs. adversarialen Input unterschiedliche persistierte Decisions, Hashes, Signaturen und Chaining.",
+  "ts": "2026-09-19T11:49:07.446923+00:00",
+  "attempts": 1
 }

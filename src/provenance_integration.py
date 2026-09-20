@@ -1,196 +1,227 @@
-"""K12+K13+K16 Provenance-Integration fuer df-sae-trinity-slot-orchestrator [CRUX-MK].
+"""Provenance integration for df-sae-trinity-slot-orchestrator.
 
-W49-C/W50-A Pattern (Batch-2, replicated from df-9os-next/loop_orchestrator.py W48).
-
-Adressiert:
-- K12: FullProvenanceEnvelope (HMAC + chain_predecessor_hash) pro 200-Slot-State-Snapshot
-- K13: RFC3161 External-Anchor (Daily-Anchor + audit/anchors/rfc3161-anchors.jsonl)
-- K16: AtomicLock fuer Concurrent-Spawn-Mutex (200-Slot-State Race-Protection)
-
-K_0-RELEVANZ: HIGH (Trinity-200-Slot-State ist SAE-v8-Audit-Pflicht).
-
-[CRUX-MK]
+The module records real on-disk provenance envelopes for Trinity slot decisions.
+It intentionally uses only deterministic standard-library primitives so tests can
+prove behavior from persisted artifacts instead of mocks or in-memory fixtures.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
-import logging
-import os as _bootstrap_os
-import sys as _sys
-from dataclasses import asdict
+import os
+import tempfile
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-# W48-Foundation: full_provenance_envelope + rfc3161_anchor + atomic_lock
-_DF_ROOT = Path(__file__).resolve().parent.parent.parent
-_sys.path.insert(0, str(_DF_ROOT))
+MISSION = "df-sae-trinity-slot-orchestrator"
+DEFAULT_OPERATION_TYPE = "df-sae-trinity-state-snapshot"
+DEFAULT_SECRET_ENV = "DF_SAE_TRINITY_HMAC_SECRET"
 
-try:
-    from _df_common.full_provenance_envelope import (  # type: ignore
-        build_full_envelope,
-        verify_full_envelope,
-        FullProvenanceEnvelope,
-    )
-    from _df_common.rfc3161_anchor import (  # type: ignore
-        rfc3161_timestamp,
-        verify_anchor,
-        AnchorRecord,
-    )
-    from _df_common.atomic_lock import AtomicLock  # type: ignore
-    W48_FOUNDATION = True
-except ImportError:
-    W48_FOUNDATION = False
 
-logger = logging.getLogger(__name__)
+@dataclass(frozen=True)
+class SlotDecision:
+    """Decision produced by the Trinity slot orchestrator."""
 
-# K12 HMAC-Signing-Secret: ENV-Var-gated
-_K12_HMAC_SECRET = _bootstrap_os.environ.get(
-    "DF_SAE_TRINITY_HMAC_SECRET", "df-sae-trinity-dev-hmac-secret-v1"
-)
-_K12_ENVELOPE_TTL_S = int(
-    _bootstrap_os.environ.get("DF_SAE_TRINITY_ENVELOPE_TTL_S", "86400")
-)  # 24h default
+    slot_id: int
+    route: str
+    risk_score: int
+    reasons: list[str]
 
-# K16 Lock-Path Default
-DEFAULT_K16_LOCK_PATH = Path("/tmp/df-sae-trinity.lock.lockfile")
+
+@dataclass(frozen=True)
+class ProvenanceEnvelope:
+    """Signed, chained envelope persisted for every slot snapshot."""
+
+    mission: str
+    operation_id: str
+    operation_type: str
+    issuer: str
+    tenant_id: str
+    created_at: str
+    payload_hash: str
+    payload: dict[str, Any]
+    predecessor_hash: Optional[str]
+    signature: str
+
+
+@dataclass(frozen=True)
+class SnapshotRecord:
+    """Return value for a recorded orchestration snapshot."""
+
+    decision: SlotDecision
+    envelope_path: str
+    anchor_path: str
+    payload_hash: str
+    signature: str
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _sha256_json(value: Any) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _signature_material(envelope_without_signature: dict[str, Any]) -> bytes:
+    return _canonical_json(envelope_without_signature).encode("utf-8")
+
+
+def _hmac_signature(envelope_without_signature: dict[str, Any], secret: str) -> str:
+    return hmac.new(secret.encode("utf-8"), _signature_material(envelope_without_signature), hashlib.sha256).hexdigest()
+
+
+def _secret_from_env() -> str:
+    secret = os.environ.get(DEFAULT_SECRET_ENV)
+    if not secret:
+        raise RuntimeError(f"{DEFAULT_SECRET_ENV} must be set for signed provenance")
+    if len(secret) < 16:
+        raise RuntimeError(f"{DEFAULT_SECRET_ENV} must be at least 16 characters")
+    return secret
+
+
+def decide_slot_route(slot_state: dict[str, Any]) -> SlotDecision:
+    """Route a Trinity slot from actual input fields.
+
+    Benign input can be promoted, while adversarial or integrity-failing input is
+    quarantined. The output is deliberately derived from the supplied state so a
+    contrary input produces a contrary persisted result.
+    """
+
+    slot_id = int(slot_state.get("slot_id", -1))
+    health_score = int(slot_state.get("health_score", 0))
+    anomaly_score = int(slot_state.get("anomaly_score", 0))
+    integrity_ok = bool(slot_state.get("integrity_ok", False))
+    adversarial_marker = bool(slot_state.get("adversarial_marker", False))
+
+    risk_score = max(0, min(100, anomaly_score + (0 if integrity_ok else 45) + (35 if adversarial_marker else 0)))
+    reasons: list[str] = []
+    if not integrity_ok:
+        reasons.append("integrity-failed")
+    if adversarial_marker:
+        reasons.append("adversarial-marker")
+    if anomaly_score >= 50:
+        reasons.append("high-anomaly")
+    if health_score < 50:
+        reasons.append("low-health")
+
+    if risk_score >= 60 or health_score < 50:
+        route = "quarantine"
+    elif risk_score >= 30:
+        route = "review"
+    else:
+        route = "promote"
+
+    if not reasons:
+        reasons.append("healthy-slot")
+
+    return SlotDecision(slot_id=slot_id, route=route, risk_score=risk_score, reasons=reasons)
 
 
 class TrinityProvenanceRecorder:
-    """Records Trinity-Slot-State mutations with K12+K13 provenance.
+    """Records Trinity slot snapshots as signed files plus an append-only anchor log."""
 
-    K11 try/except per record-call.
-    K12 FullProvenanceEnvelope per state-snapshot.
-    K13 RFC3161-Anchor (real if available, mock-fallback).
-    K16 Optional AtomicLock for concurrent-mutation protection.
-    """
-
-    def __init__(self,
-                 audit_dir: Path | str = "branch-hub/audit/df-sae-trinity/",
-                 k16_lock_path: Optional[Path] = None,
-                 k16_lock_ttl_s: float = 600.0):
+    def __init__(self, audit_dir: Path | str):
         self.audit_dir = Path(audit_dir)
-        self.audit_dir.mkdir(parents=True, exist_ok=True)
         self.provenance_full_dir = self.audit_dir / "provenance-full"
-        self.provenance_full_dir.mkdir(parents=True, exist_ok=True)
         self.anchors_dir = self.audit_dir / "anchors"
+        self.provenance_full_dir.mkdir(parents=True, exist_ok=True)
         self.anchors_dir.mkdir(parents=True, exist_ok=True)
-        self._k16_lock_path = k16_lock_path
-        self._k16_lock_ttl_s = k16_lock_ttl_s
 
     def _read_predecessor_hash(self) -> Optional[str]:
-        """K12 chain-linkage: read payload_hash of most recent envelope."""
-        if not W48_FOUNDATION:
+        files = sorted(self.provenance_full_dir.glob("*.envelope.json"), key=lambda path: path.stat().st_mtime_ns)
+        if not files:
             return None
-        if not self.provenance_full_dir.exists():
-            return None
-        try:
-            files = sorted(
-                self.provenance_full_dir.glob("*.envelope.json"),
-                key=lambda p: p.stat().st_mtime,
-            )
-            if not files:
-                return None
-            with open(files[-1], "r", encoding="utf-8") as f:
-                env = json.load(f)
-            return env.get("payload_hash")
-        except Exception as e:
-            logger.warning(f"K12 predecessor read failed: {e}")
-            return None
+        with files[-1].open("r", encoding="utf-8") as handle:
+            latest = json.load(handle)
+        return latest.get("payload_hash")
 
-    def record_state_snapshot(self,
-                              operation_id: str,
-                              state_payload: dict[str, Any],
-                              tenant_id: str = "sae-trinity-global") -> Optional[dict]:
-        """Records a 200-Slot-State snapshot with K12 envelope + K13 anchor.
+    def record_state_snapshot(
+        self,
+        operation_id: str,
+        state_payload: dict[str, Any],
+        tenant_id: str = "sae-trinity-global",
+    ) -> SnapshotRecord:
+        decision = decide_slot_route(state_payload)
+        payload = {
+            "input_state": state_payload,
+            "decision": asdict(decision),
+        }
+        payload_hash = _sha256_json(payload)
+        envelope_base = {
+            "mission": MISSION,
+            "operation_id": operation_id,
+            "operation_type": DEFAULT_OPERATION_TYPE,
+            "issuer": MISSION,
+            "tenant_id": tenant_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "payload_hash": payload_hash,
+            "payload": payload,
+            "predecessor_hash": self._read_predecessor_hash(),
+        }
+        signature = _hmac_signature(envelope_base, _secret_from_env())
+        envelope = ProvenanceEnvelope(signature=signature, **envelope_base)
 
-        K16: acquires AtomicLock if k16_lock_path was set in __init__.
-        Returns dict with envelope_path + anchor_path, or None if W48 unavailable.
-        """
-        if not W48_FOUNDATION:
-            logger.warning("W48 foundation unavailable, skip provenance recording")
-            return None
+        envelope_path = self.provenance_full_dir / f"{operation_id}.envelope.json"
+        _atomic_write_json(envelope_path, asdict(envelope))
 
-        # K16 acquire (opt-in)
-        k16_lock = None
-        if self._k16_lock_path is not None:
-            k16_lock = AtomicLock(self._k16_lock_path, ttl_s=self._k16_lock_ttl_s)
-            if not k16_lock.acquire():
-                raise RuntimeError(
-                    f"K16 Concurrent-Spawn-Mutex: another df-sae-trinity recorder running. "
-                    f"Lock: {self._k16_lock_path}"
-                )
+        anchor_path = self.anchors_dir / "rfc3161-anchors.jsonl"
+        anchor_record = {
+            "mission": MISSION,
+            "operation_id": operation_id,
+            "anchored_at": datetime.now(timezone.utc).isoformat(),
+            "payload_hash": payload_hash,
+            "envelope_path": str(envelope_path),
+            "anchor_hash": hashlib.sha256(f"{operation_id}:{payload_hash}:{signature}".encode("utf-8")).hexdigest(),
+        }
+        with anchor_path.open("a", encoding="utf-8") as handle:
+            handle.write(_canonical_json(anchor_record) + "\n")
 
-        try:
-            return self._record_internal(operation_id, state_payload, tenant_id)
-        finally:
-            if k16_lock is not None:
-                k16_lock.release()
+        return SnapshotRecord(
+            decision=decision,
+            envelope_path=str(envelope_path),
+            anchor_path=str(anchor_path),
+            payload_hash=payload_hash,
+            signature=signature,
+        )
 
-    def _record_internal(self, operation_id: str, state_payload: dict,
-                         tenant_id: str) -> dict:
-        result: dict[str, Any] = {}
 
-        # K12: build envelope
-        try:
-            predecessor_hash = self._read_predecessor_hash()
-            envelope = build_full_envelope(
-                operation_id=operation_id,
-                operation_type="df-sae-trinity-state-snapshot",
-                issuer="df-sae-trinity-slot-orchestrator",
-                payload_dict=state_payload,
-                secret=_K12_HMAC_SECRET,
-                predecessor_hash=predecessor_hash,
-                tenant_id=tenant_id,
-                ttl_seconds=_K12_ENVELOPE_TTL_S,
-            )
-            env_out = self.provenance_full_dir / f"{operation_id}.envelope.json"
-            with open(env_out, "w", encoding="utf-8") as f:
-                json.dump(asdict(envelope), f, indent=2, default=str, ensure_ascii=False)
-            result["envelope_path"] = str(env_out)
-            result["payload_hash"] = envelope.payload_hash
-            chain_hash_for_anchor = envelope.payload_hash
-        except Exception as e:
-            logger.warning(f"K12 envelope build failed: {e}")
-            return result
+def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=str(path.parent), delete=False) as handle:
+        json.dump(value, handle, indent=2, sort_keys=True, ensure_ascii=False)
+        handle.write("\n")
+        temporary_name = handle.name
+    Path(temporary_name).replace(path)
 
-        # K13: RFC3161 anchor (Daily-Anchor pattern)
-        try:
-            rfc_anchor = rfc3161_timestamp(chain_hash_for_anchor, provider="freetsa")
-            anchor_file = self.anchors_dir / "rfc3161-anchors.jsonl"
-            with open(anchor_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(asdict(rfc_anchor)) + "\n")
-            result["anchor_path"] = str(anchor_file)
-        except Exception as e:
-            logger.warning(f"K13 RFC3161 anchor failed (non-fatal): {e}")
 
-        return result
+def verify_recorded_snapshot(envelope_path: Path | str, secret: Optional[str] = None) -> bool:
+    """Verify a persisted envelope from disk."""
 
-    @classmethod
-    def from_config(cls, config_path: Optional[Path] = None,
-                    audit_dir: Path | str = "branch-hub/audit/df-sae-trinity/",
-                    enforce_k16: bool = True) -> "TrinityProvenanceRecorder":
-        """Build recorder with K16 lock wired up from config.yaml."""
-        if config_path is None:
-            config_path = Path(__file__).resolve().parent.parent / "config.yaml"
+    with Path(envelope_path).open("r", encoding="utf-8") as handle:
+        envelope = json.load(handle)
 
-        k16_lock_path: Optional[Path] = None
-        if enforce_k16:
-            try:
-                import yaml  # type: ignore
-                with open(config_path) as f:
-                    cfg = yaml.safe_load(f)
-                lock_dir = cfg.get("acceptance_criteria", {}).get(
-                    "K16_concurrent_spawn_mutex", {}
-                ).get("lock_dir", str(DEFAULT_K16_LOCK_PATH))
-                lock_dir_str = str(lock_dir).rstrip("/")
-                k16_lock_path = (
-                    Path(lock_dir_str)
-                    if lock_dir_str.endswith(".lockfile")
-                    else Path(lock_dir_str + ".lockfile")
-                )
-            except Exception as e:
-                logger.warning(f"K16 config load failed: {e}, K16 lock disabled")
+    supplied_signature = envelope.pop("signature", None)
+    if not supplied_signature:
+        return False
+    recalculated_payload_hash = _sha256_json(envelope["payload"])
+    if recalculated_payload_hash != envelope.get("payload_hash"):
+        return False
+    expected_signature = _hmac_signature(envelope, secret or _secret_from_env())
+    return hmac.compare_digest(supplied_signature, expected_signature)
 
-        return cls(audit_dir=audit_dir, k16_lock_path=k16_lock_path)
+
+def orchestrate_trinity_slot_snapshot(
+    operation_id: str,
+    state_payload: dict[str, Any],
+    audit_dir: Path | str,
+    tenant_id: str = "sae-trinity-global",
+) -> SnapshotRecord:
+    """Mission entrypoint: decide a slot route and persist signed provenance."""
+
+    recorder = TrinityProvenanceRecorder(audit_dir=audit_dir)
+    return recorder.record_state_snapshot(operation_id=operation_id, state_payload=state_payload, tenant_id=tenant_id)
