@@ -1,10 +1,10 @@
 {
   "df": "df-sae-trinity-slot-orchestrator",
-  "ts": "2026-09-19T08:06:07.822871+00:00",
-  "maturity": "CODE",
-  "maturity_level": 3,
-  "evidence_grade": 2,
-  "grade_basis": "pytest-gruen (LLM-selbstgeschrieben), codex_verify=HOLLOW -> max Grade-2 (CODE), nie TESTED/4",
+  "ts": "2026-09-20T08:09:43.585244+00:00",
+  "maturity": "TESTED",
+  "maturity_level": 4,
+  "evidence_grade": 3,
+  "grade_basis": "pytest-gruen + HOLDS-verifiziert, 0 externe Belege (consumed-Quittung/Real-Receipt) -> max Grade-3",
   "wargame_verdict": "CONDITIONAL",
   "crux": "[CRUX-MK]"
 }
